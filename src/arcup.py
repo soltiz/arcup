@@ -47,7 +47,10 @@ def get_file_infos_from_zip(zipfile):
     # we return internal file name and md5 for all non-directory files within the zipped file
     
     # the separator within zip archive is always "/" even when produced on windows...
-    return [ {'file':get_internal_zip_path(member), 'md5': md5_from_zipped_file(zipfile,member)} for member in zipfile.namelist() if not member.endswith("/") ]
+    return [ 
+            {'file':get_internal_zip_path(member), 
+             'md5': md5_from_zipped_file(zipfile,member),
+             'size': zipfile.getinfo(member).file_size} for member in zipfile.namelist() if not member.endswith("/") ]
 
 @click.group()
 def cli():
@@ -67,26 +70,39 @@ def apply(update_archive_filename):
 def create(update_archive_filename,base_version_archive, new_version_archive,prerequisites_output_file,exclude_list_file):
     print "create incremental archive '{}'...".format(update_archive_filename)
     prerequisites=[]
-    with zipfile.ZipFile(new_version_archive,'r') as myzip:
-        new_members_info=get_file_infos_from_zip(myzip)
-        print "CVF INFO  : "+json.dumps(new_members_info)    
-        for new_member in [memberinfo['file'] for memberinfo in new_members_info]:
-            print "NEW MEMBER : " + new_member
+    files_to_include=[]
+    with zipfile.ZipFile(new_version_archive,'r') as newzip:
+        print "Computing new files signatures..."
+        new_members_info=get_file_infos_from_zip(newzip)
         
-    with zipfile.ZipFile(base_version_archive,'r') as myzip:
-        old_members=get_zip_files_internalpaths_list(myzip)
-        for old_member in old_members:
-            print "OLD MEMBER : " + old_member
-        for new_member_info in [memberinfo for memberinfo in new_members_info]:
+        with zipfile.ZipFile(base_version_archive,'r') as oldzip:
+            print "Comparing with base files list..."
+            old_members=get_zip_files_internalpaths_list(oldzip)
+            for new_member_info in [memberinfo for memberinfo in new_members_info]:
                 file_name=new_member_info['file']
                 if file_name in old_members:
-                    print "OVERRIDE FILE > "+file_name
-                    prerequisites.append({'file':file_name,'size':3500,'hash':new_member_info['md5']})
+                    file_changed=False
+                    old_full_filename=external_file_path_from_internal_path(oldzip, file_name)
+                    old_filesize=oldzip.getinfo(old_full_filename).file_size
+                    if new_member_info['size']!=old_filesize:
+                        file_changed=True
+                    else:
+                        old_md5=md5_from_zipped_file(oldzip, file_name)
+                        file_changed=(old_md5!=new_member_info['md5'])
+                    if file_changed:
+                        print "UPDATED > "+file_name
+                        files_to_include.append(file_name)
+                    else:
+                        prerequisites.append({'file':file_name,'size':new_member_info['size'],'hash':new_member_info['md5']})
+                else:
+                    print "NEW > "+file_name
+                    files_to_include.append(file_name)
+        print "Building update archive..."
+        with zipfile.ZipFile(update_archive_filename,'w') as updatezip:
+            for file_name in files_to_include:
+                full_filename=external_file_path_from_internal_path(newzip, file_name)
+                updatezip.writestr(file_name,newzip.read(full_filename))
 
-    json.dump(prerequisites,prerequisites_output_file)
-    #prerequisites_output_file.write("new\n")
-    #print json.JSONEncoder().encode(prerequisites)
-    #json.dump(prerequisites,prerequisites_output_file,cls=ComplexEncoder)
 
     
 if __name__ == '__main__':

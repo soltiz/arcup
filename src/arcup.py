@@ -24,6 +24,13 @@ import zipfile
 import click
 import hashlib
 
+def string_matches_one_pattern_of(the_string,patterns_list):
+    for pattern in patterns_list:
+        if the_string==pattern:
+            print "CVF SHOULD IGNORE =>"+the_string
+            return True
+    return False
+
 def get_internal_zip_path(path):
     # intenal name is the file path  stripped of first segment which is normally the name of the root directory created 
     # on archive extraction
@@ -58,16 +65,22 @@ def cli():
 
 @cli.command()
 @click.argument('update_archive_filename', type=click.Path(exists=True))
-def apply(update_archive_filename):
-    print "apply '{}' update archive...".format(update_archive_filename)
+@click.argument('target_directory', type=click.Path(exists=True))
+@click.argument('prerequisites_file', type=click.Path(exists=True))
+def apply(update_archive_filename,target_directory,prerequisites_file):
+    print "apply '{}' update archive to directory '{}'...".format(update_archive_filename,target_directory)
 
 @cli.command()
 @click.argument('update_archive_filename', type=click.Path(exists=False))
 @click.argument('base_version_archive', type=click.Path(exists=True))
 @click.argument('new_version_archive', type=click.Path(exists=True))
 @click.argument('prerequisites_output_file', type=click.File('w'))
-@click.option('--exclude-list', 'exclude_list_file', required=False, type=click.File('w'))
+@click.option('--exclude-patterns-list', 'exclude_list_file', required=False, type=click.File('r'))
 def create(update_archive_filename,base_version_archive, new_version_archive,prerequisites_output_file,exclude_list_file):
+    if exclude_list_file is None:
+        exclude_patterns=[]
+    else:
+        exclude_patterns=exclude_list_file.readlines()
     print "create incremental archive '{}'...".format(update_archive_filename)
     prerequisites=[]
     files_to_include=[]
@@ -80,23 +93,27 @@ def create(update_archive_filename,base_version_archive, new_version_archive,pre
             old_members=get_zip_files_internalpaths_list(oldzip)
             for new_member_info in [memberinfo for memberinfo in new_members_info]:
                 file_name=new_member_info['file']
-                if file_name in old_members:
-                    file_changed=False
-                    old_full_filename=external_file_path_from_internal_path(oldzip, file_name)
-                    old_filesize=oldzip.getinfo(old_full_filename).file_size
-                    if new_member_info['size']!=old_filesize:
-                        file_changed=True
-                    else:
-                        old_md5=md5_from_zipped_file(oldzip, file_name)
-                        file_changed=(old_md5!=new_member_info['md5'])
-                    if file_changed:
-                        print "UPDATED > "+file_name
-                        files_to_include.append(file_name)
-                    else:
-                        prerequisites.append({'file':file_name,'size':new_member_info['size'],'hash':new_member_info['md5']})
+                if string_matches_one_pattern_of(file_name,exclude_patterns):
+                    print "IGNORING > "+file_name
                 else:
-                    print "NEW > "+file_name
-                    files_to_include.append(file_name)
+                    if file_name in old_members:
+                        file_changed=False
+                        old_full_filename=external_file_path_from_internal_path(oldzip, file_name)
+                        old_filesize=oldzip.getinfo(old_full_filename).file_size
+                        if new_member_info['size']!=old_filesize:
+                            file_changed=True
+                        else:
+                            old_md5=md5_from_zipped_file(oldzip, old_full_filename)
+                            file_changed=(old_md5!=new_member_info['md5'])
+                        if file_changed:
+                            print "UPDATED > "+file_name
+                            files_to_include.append(file_name)
+                        else:
+                            prerequisites.append({'file':file_name,'size':new_member_info['size'],'hash':new_member_info['md5']})
+                    else:
+                        print "NEW > "+file_name
+                        files_to_include.append(file_name)
+        json.dump(prerequisites,prerequisites_output_file)
         print "Building update archive..."
         with zipfile.ZipFile(update_archive_filename,'w') as updatezip:
             for file_name in files_to_include:

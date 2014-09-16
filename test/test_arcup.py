@@ -33,7 +33,7 @@ class Test(unittest.TestCase):
             os.remove('prerequisites-v1.out')
         except:
             pass
-        result=runner.invoke(arcup.create,['update-v1.1.zip','v1.zip','v1.1.zip' ,'prerequisites-v1.out'])
+        result=runner.invoke(arcup.create,['update-v1.1.zip','v1.zip','v1.1.zip' ,'prerequisites-v1.out', '--ignore-patterns-list', 'ignored_files'])
         self.assertEqual(result.exit_code, 0)
         #arcup.create(click.path("update-v1.1.zip"),"v1.zip", "v1.1.zip" ,"prerequisites.txt")
         self.assertTrue(filecmp.cmp('prerequisites-v1.out','requisites-v1.1.ref'))

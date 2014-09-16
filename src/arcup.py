@@ -17,17 +17,18 @@ It defines classes_and_methods
 @contact:    c.vanfrachem@free.fr
 
 '''
+import hashlib
 import json
 from os.path import os
+from sys import stderr
 import zipfile
 
 import click
-import hashlib
+
 
 def string_matches_one_pattern_of(the_string,patterns_list):
     for pattern in patterns_list:
         if the_string==pattern:
-            print "CVF SHOULD IGNORE =>"+the_string
             return True
     return False
 
@@ -66,10 +67,47 @@ def cli():
 @cli.command()
 @click.argument('update_archive_filename', type=click.Path(exists=True))
 @click.argument('target_directory', type=click.Path(exists=True))
-@click.argument('prerequisites_file', type=click.Path(exists=True))
+@click.argument('prerequisites_file', type=click.File('r'))
 def apply(update_archive_filename,target_directory,prerequisites_file):
-    print "apply '{}' update archive to directory '{}'...".format(update_archive_filename,target_directory)
-
+    print "Checking prerequisites..."
+    check_errors=0
+    prerequisites= json.load(prerequisites_file)
+    for prerequisite in prerequisites:
+        file_name=prerequisite['file']
+        installed_file=os.path.join(target_directory,file_name)
+        same_file=True
+        current_filesize=-1
+        try:
+            current_filesize=os.path.getsize(installed_file)
+        except:
+            pass
+        if current_filesize!=prerequisite['size']:
+            print >> stderr, "ERROR :  '{}' ==>   expected size = {}  real size = {}".format(installed_file,prerequisite['size'],current_filesize)
+            same_file=False
+        else:
+            BLOCKSIZE = 65536
+            hasher = hashlib.md5()
+            with open(installed_file, 'rb') as afile:
+                buf = afile.read(BLOCKSIZE)
+                while len(buf) > 0:
+                    hasher.update(buf)
+                    buf = afile.read(BLOCKSIZE)
+            real_md5=hasher.hexdigest()
+            if real_md5!=prerequisite['md5']:
+                same_file=False
+                print >> stderr, "ERROR :  '{}' ==>   expected md5 = {}  real md5 = {}".format(installed_file,prerequisite['md5'],real_md5)
+            
+        if not same_file:
+            print >> stderr, "ERROR : installed file '{}' is not of the expected version.".format(installed_file)
+            check_errors+=1
+    if check_errors != 0:
+        print >>    stderr, "ERROR : {} installed file(s) do not match expected version ==> will not apply patch.".format(check_errors)
+        return 13
+    print "All required installed files are matching expected version. Proceeding with patch..."
+    with zipfile.ZipFile(update_archive_filename) as updatezip:
+        updatezip.extractall(target_directory)
+    
+    
 @cli.command()
 @click.argument('update_archive_filename', type=click.Path(exists=False))
 @click.argument('base_version_archive', type=click.Path(exists=True))
@@ -80,7 +118,7 @@ def create(update_archive_filename,base_version_archive, new_version_archive,pre
     if exclude_list_file is None:
         exclude_patterns=[]
     else:
-        exclude_patterns=exclude_list_file.readlines()
+        exclude_patterns= prerequisites= exclude_list_file.read().splitlines() 
     print "create incremental archive '{}'...".format(update_archive_filename)
     prerequisites=[]
     files_to_include=[]
@@ -109,7 +147,7 @@ def create(update_archive_filename,base_version_archive, new_version_archive,pre
                             print "UPDATED > "+file_name
                             files_to_include.append(file_name)
                         else:
-                            prerequisites.append({'file':file_name,'size':new_member_info['size'],'hash':new_member_info['md5']})
+                            prerequisites.append({'file':file_name,'size':new_member_info['size'],'md5':new_member_info['md5']})
                     else:
                         print "NEW > "+file_name
                         files_to_include.append(file_name)

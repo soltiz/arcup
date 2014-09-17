@@ -22,13 +22,14 @@ import json
 from os.path import os
 from sys import stderr
 import zipfile
-
+import fnmatch
 import click
 
 
 def string_matches_one_pattern_of(the_string,patterns_list):
+
     for pattern in patterns_list:
-        if the_string==pattern:
+        if fnmatch.fnmatch(the_string,pattern):
             return True
     return False
 
@@ -72,7 +73,9 @@ def apply(update_archive_filename,target_directory,prerequisites_file):
     print "Checking prerequisites..."
     check_errors=0
     prerequisites= json.load(prerequisites_file)
-    for prerequisite in prerequisites:
+    presence_requirements=[requirement for requirement in prerequisites if requirement['require_type']=='present']
+    files_to_remove=[requirement['file'] for requirement in prerequisites if requirement['require_type']=='to_remove']
+    for prerequisite in presence_requirements:
         file_name=prerequisite['file']
         installed_file=os.path.join(target_directory,file_name)
         same_file=True
@@ -104,6 +107,9 @@ def apply(update_archive_filename,target_directory,prerequisites_file):
         print >>    stderr, "ERROR : {} installed file(s) do not match expected version ==> will not apply patch.".format(check_errors)
         return 13
     print "All required installed files are matching expected version. Proceeding with patch..."
+    for file in files_to_remove:
+        if os.path.isfile(file):
+            os.remove(file)
     with zipfile.ZipFile(update_archive_filename) as updatezip:
         updatezip.extractall(target_directory)
     
@@ -131,26 +137,45 @@ def create(update_archive_filename,base_version_archive, new_version_archive,pre
             old_members=get_zip_files_internalpaths_list(oldzip)
             for new_member_info in [memberinfo for memberinfo in new_members_info]:
                 file_name=new_member_info['file']
-                if string_matches_one_pattern_of(file_name,exclude_patterns):
-                    print "IGNORING > "+file_name
-                else:
-                    if file_name in old_members:
-                        file_changed=False
-                        old_full_filename=external_file_path_from_internal_path(oldzip, file_name)
-                        old_filesize=oldzip.getinfo(old_full_filename).file_size
-                        if new_member_info['size']!=old_filesize:
-                            file_changed=True
+                file_to_ignore=string_matches_one_pattern_of(file_name,exclude_patterns)
+                if file_name in old_members:
+                    file_changed=False
+                    old_full_filename=external_file_path_from_internal_path(oldzip, file_name)
+                    old_filesize=oldzip.getinfo(old_full_filename).file_size
+                    if new_member_info['size']!=old_filesize:
+                        file_changed=True
+                    else:
+                        old_md5=md5_from_zipped_file(oldzip, old_full_filename)
+                        file_changed=(old_md5!=new_member_info['md5'])
+                    if file_changed:
+                        if file_to_ignore:
+                            print "                         IGNORING UPDATE > "+file_name
                         else:
-                            old_md5=md5_from_zipped_file(oldzip, old_full_filename)
-                            file_changed=(old_md5!=new_member_info['md5'])
-                        if file_changed:
                             print "UPDATED > "+file_name
                             files_to_include.append(file_name)
-                        else:
-                            prerequisites.append({'file':file_name,'size':new_member_info['size'],'md5':new_member_info['md5']})
+                    else:
+                        prerequisites.append({
+                            'file':file_name,
+                            'size':new_member_info['size'],
+                            'md5':new_member_info['md5'],
+                            'require_type':'present'})
+                else:
+                    if file_to_ignore:
+                        print "                         IGNORING NEW > "+file_name
                     else:
                         print "NEW > "+file_name
-                        files_to_include.append(file_name)
+                    files_to_include.append(file_name)
+            for old_member in old_members:
+                file_to_ignore=string_matches_one_pattern_of(old_member,exclude_patterns)
+                if not old_member in [new_member_info['file'] for new_member_info in new_members_info]:
+                    if file_to_ignore:
+                        print "                         IGNORING DELETED > "+old_member
+                    else:
+                        print "DELETED > "+old_member 
+                        prerequisites.append({
+                            'file':old_member,
+                            'require_type':'to_remove'}) 
+            
         json.dump(prerequisites,prerequisites_output_file)
         print "Building update archive..."
         with zipfile.ZipFile(update_archive_filename,'w') as updatezip:
